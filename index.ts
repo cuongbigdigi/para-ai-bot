@@ -7,7 +7,7 @@ const NOTION_API_KEY = Deno.env.get("NOTION_API_KEY")!;
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-console.log("Bot v22 — debug logging + improved tool-response handling");
+console.log("Bot v23 — PARA focus, removed CS/Skills");
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 // === NOTION ===
@@ -202,57 +202,11 @@ async function listNotebooks(): Promise<string> {
   return r;
 }
 
-// === SKILLS ===
-async function getSkillsList(): Promise<string> {
-  const { data } = await supabase.from("telegram_skills").select("id, name, description, category").eq("is_active", true).order("skill_number");
-  if (!data?.length) return "Không có skill.";
-  let r = "🎯 *Skills:*\n\n📊 *PGS Core:*\n";
-  for (const s of data.filter((s: any) => s.category === "pgs")) r += `• ${s.name} — ${s.description}\n`;
-  r += "\n📣 *Ads Stack:*\n";
-  for (const s of data.filter((s: any) => s.category === "ads")) r += `• ${s.name} — ${s.description}\n`;
-  return r;
-}
 
-async function findSkill(query: string): Promise<{id: string, name: string, skill_prompt: string} | null> {
-  const { data } = await supabase.from("telegram_skills").select("id, name, skill_prompt, trigger_words").eq("is_active", true);
-  if (!data) return null;
-  const q = query.toLowerCase().replace(/_/g, "-");
-  const exact = data.find((s: any) => q === s.id || q === "/" + s.id);
-  if (exact) return exact;
-  for (const s of data) { for (const tw of s.trigger_words) { if (q.includes(tw.toLowerCase())) return s; } }
-  return null;
-}
-
-async function getActiveSession(chatId: number) {
-  const { data } = await supabase.from("telegram_skill_sessions").select("*, telegram_skills(name, skill_prompt)").eq("chat_id", chatId).eq("status", "active").order("created_at", { ascending: false }).limit(1).single();
-  return data;
-}
-
-async function startSkillSession(chatId: number, skillId: string, clientName?: string) {
-  await supabase.from("telegram_skill_sessions").update({ status: "cancelled" }).eq("chat_id", chatId).eq("status", "active");
-  await supabase.from("telegram_skill_sessions").insert({ chat_id: chatId, skill_id: skillId, client_name: clientName });
-}
-
-async function endSkillSession(chatId: number) {
-  await supabase.from("telegram_skill_sessions").update({ status: "completed", updated_at: new Date().toISOString() }).eq("chat_id", chatId).eq("status", "active");
-}
-
-const CMD_ALIASES: Record<string, string> = {
-  "scan": "business-scan", "bottleneck": "bottleneck-finder", "dreamer": "dream-buyer",
-  "offer": "godfather-offer", "adsbrief": "ads-brief", "adscopy": "ads-create",
-  "adscheck": "ads-monitor", "review": "kaizen-review", "hvco": "hvco-creator",
-  "capture": "capture-leads", "traffic": "traffic-ads", "nurture": "magic-lantern",
-  "sales": "sell-like-expert", "scale": "scale-up", "strategy": "strategy-proposal",
-};
 
 // === GEMINI ===
-const BASE_PROMPT = `Bạn là AI Assistant của Cương Big — người kiến tạo Hệ thống Chuyển đổi cho Founder ngành đào tạo/tư vấn.
-Bạn có quyền truy cập: Notion (clients/projects/tasks/meeting notes/deliverables/resources), NotebookLM, Skills CS, và PARA Content Router.
-
-CS — Hệ thống Chuyển đổi (3 Pha × 9 GĐ):
-- Pha A: GĐ1 Business Scan → GĐ2 Bottleneck → GĐ3 Strategy
-- Pha B: GĐ4 Dream Buyer → GĐ5 HVCO → GĐ6 Capture Leads → GĐ7 Godfather Offer → GĐ8 Traffic
-- Pha C: GĐ9 Scale Up + Bàn giao
+const BASE_PROMPT = `Bạn là AI Assistant của Cương Big — trợ lý ghi chú thông minh theo phương pháp PARA.
+Bạn có quyền truy cập: Notion (clients/projects/tasks/meeting notes/deliverables/resources), NotebookLM, và PARA Content Router.
 
 PARA: Projects (có deadline) → Areas (duy trì) → Resources (tham khảo) → Archive (đã xong)
 
@@ -260,7 +214,6 @@ Quy tắc:
 - Khi hỏi về client/project → dùng tool Notion
 - Khi muốn phân loại/lưu nội dung → dùng tool para_save
 - QUAN TRỌNG: sau khi para_save thành công, LUÔN include link Notion trong reply (từ field url trong kết quả tool)
-- Khi muốn chạy skill → dùng tool start_skill
 - Trả lời ngắn gọn, tiếng Việt, emoji, phù hợp Telegram.
 
 Quy tắc PARA Save:
@@ -282,9 +235,7 @@ const TOOLS = [
   { name: "search_notebooks", description: "Tìm notebook NotebookLM", parameters: { type: "OBJECT" as const, properties: { query: { type: "STRING" as const, description: "Keyword" } }, required: ["query"] } },
   { name: "query_notebook", description: "Hỏi chi tiết từ NotebookLM", parameters: { type: "OBJECT" as const, properties: { query: { type: "STRING" as const, description: "Câu hỏi" }, notebook_hint: { type: "STRING" as const, description: "Tên client/notebook" } }, required: ["query"] } },
   { name: "list_notebooks", description: "Xem notebooks", parameters: { type: "OBJECT" as const, properties: {} } },
-  { name: "start_skill", description: "Chạy skill CS", parameters: { type: "OBJECT" as const, properties: { skill_id: { type: "STRING" as const, description: "business-scan, bottleneck-finder, strategy-proposal, dream-buyer, hvco-creator, capture-leads, godfather-offer, traffic-ads, magic-lantern, sell-like-expert, scale-up, kaizen-review, ads-brief, ads-create, ads-monitor" }, client_name: { type: "STRING" as const, description: "Client" } }, required: ["skill_id"] } },
-  { name: "end_skill", description: "Dừng skill", parameters: { type: "OBJECT" as const, properties: {} } },
-  { name: "list_skills", description: "Xem skills", parameters: { type: "OBJECT" as const, properties: {} } },
+
   {
     name: "para_save",
     description: "Phân loại nội dung PARA và lưu vào Notion. Tool trả về {result, url} — url là link Notion trực tiếp, LUÔN gửi link này cho user.",
@@ -337,14 +288,7 @@ async function execTool(name: string, args: any, chatId: number): Promise<string
     case "search_notebooks": return searchNotebooks(args.query);
     case "query_notebook": return queryNotebook(args.query, args.notebook_hint);
     case "list_notebooks": return listNotebooks();
-    case "start_skill": {
-      const s = await findSkill(args.skill_id);
-      if (!s) return "Không tìm thấy skill.";
-      await startSkillSession(chatId, s.id, args.client_name);
-      return `Đã bắt đầu: ${s.name}${args.client_name ? " cho " + args.client_name : ""}. Hướng dẫn:\n\n${s.skill_prompt}`;
-    }
-    case "end_skill": { await endSkillSession(chatId); return "✅ Skill kết thúc."; }
-    case "list_skills": return getSkillsList();
+
     case "para_save": {
       const { title, content, category, client, pgs_phase, cs_analysis, sub_type, url } = args;
       let saveResult: { result: string; url: string };
@@ -371,11 +315,10 @@ async function execTool(name: string, args: any, chatId: number): Promise<string
   }
 }
 
-async function callGemini(messages: Array<{role: string, content: string}>, userMessage: string, chatId: number, skillContext?: string): Promise<string> {
+async function callGemini(messages: Array<{role: string, content: string}>, userMessage: string, chatId: number): Promise<string> {
   const contents = messages.map(m => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
   contents.push({ role: "user", parts: [{ text: userMessage }] });
-  let sysPrompt = BASE_PROMPT;
-  if (skillContext) sysPrompt += `\n\n=== SKILL ĐANG CHẠY ===\n${skillContext}\nHướng dẫn từng bước. Hỏi từng câu, chờ trả lời. Khi đủ data → output report.`;
+  const sysPrompt = BASE_PROMPT;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
   console.log(`[Gemini] Call 1: ${contents.length} messages, last="${userMessage.substring(0, 50)}"`);
   const res = await fetch(url, {
@@ -439,7 +382,7 @@ async function saveMsg(chatId: number, userName: string, role: string, content: 
 
 // === MAIN ===
 Deno.serve(async (req: Request) => {
-  if (req.method === "GET") return new Response(JSON.stringify({ status: "ok", version: 22, features: ["para-confirm", "notion-urls-fixed", "pr-shortcut", "tool-response-fix", "debug-logging", "skills", "notebooklm"] }), { headers: { "Content-Type": "application/json" } });
+  if (req.method === "GET") return new Response(JSON.stringify({ status: "ok", version: 23, features: ["para-confirm", "notion-urls-fixed", "pr-shortcut", "tool-response-fix", "debug-logging", "notebooklm"] }), { headers: { "Content-Type": "application/json" } });
   try {
     const body = await req.json();
     const message = body.message;
@@ -451,50 +394,26 @@ Deno.serve(async (req: Request) => {
 
     if (text === "/start" || text.startsWith("/start ")) {
       const ok = await isAllowed(chatId);
-      await sendMsg(chatId, ok ? `🚀 *Sumo AI Bot v22*\n\nChào ${userName}!\n📊 Notion • 📚 NotebookLM • 🎯 Skills • 🧠 PARA\n\n/pr — PARA Router\n/ps — Dashboard\n/cs — Hệ thống Chuyển đổi` : `⚠️ Chưa có quyền. ID: ${chatId}`);
+      await sendMsg(chatId, ok ? `🚀 *PARA AI Bot v23*\n\nChào ${userName}!\n🧠 PARA Router • 📊 Notion • 📚 NotebookLM\n\n/pr — Gửi nội dung để phân loại\n/ps — Dashboard\n/clients — Clients\n/projects — Projects` : `⚠️ Chưa có quyền. ID: ${chatId}`);
       return new Response("OK");
     }
     if (text === "/clear") { await supabase.from("telegram_chat_history").delete().eq("chat_id", chatId); await sendMsg(chatId, "🗑️ Xóa xong!"); return new Response("OK"); }
-    if (text === "/stop") { await endSkillSession(chatId); await sendMsg(chatId, "⏹️ Skill dừng."); return new Response("OK"); }
-    if (text === "/skills") { await typing(chatId); await sendMsg(chatId, await getSkillsList()); return new Response("OK"); }
     if (text === "/clients") { await typing(chatId); await sendMsg(chatId, await listAllClients()); return new Response("OK"); }
     if (text === "/projects") { await typing(chatId); await sendMsg(chatId, await listProjects()); return new Response("OK"); }
     if (text === "/notebooks") { await typing(chatId); await sendMsg(chatId, await listNotebooks()); return new Response("OK"); }
     if (text === "/ps" || text === "/parastatus") { await typing(chatId); await sendMsg(chatId, await getParaStatus()); return new Response("OK"); }
-    if (text === "/cs" || text === "/pgs") {
-      await sendMsg(chatId, `\ud83c\udfd7\ufe0f *CS \u2014 H\u1ec7 th\u1ed1ng Chuy\u1ec3n \u0111\u1ed5i (3 Pha \u00d7 9 G\u0110):*\n\n\ud83d\udd0d *Pha A \u2014 Th\u1ea5u hi\u1ec3u:*\n1\ufe0f\u20e3 G\u01101: Business Scan\n2\ufe0f\u20e3 G\u01102: Bottleneck\n3\ufe0f\u20e3 G\u01103: Strategy\n\n\u26a1 *Pha B \u2014 Ki\u1ebfn t\u1ea1o:*\n4\ufe0f\u20e3 G\u01104: Dream Buyer\n5\ufe0f\u20e3 G\u01105: HVCO\n6\ufe0f\u20e3 G\u01106: Capture Leads\n7\ufe0f\u20e3 G\u01107: Godfather Offer\n8\ufe0f\u20e3 G\u01108: Traffic\n\n\ud83d\ude80 *Pha C \u2014 B\u00e0n giao:*\n9\ufe0f\u20e3 G\u01109: Scale Up`);
-      return new Response("OK");
-    }
     if (text === "/pr" || text === "/para") {
       await typing(chatId);
-      await sendMsg(chatId, `\ud83e\udde0 *PARA Router*\n\nG\u1eedi n\u1ed9i dung \u2192 Bot \u0111\u1ec1 xu\u1ea5t t\u00ean + ph\u00e2n lo\u1ea1i \u2192 X\u00e1c nh\u1eadn \u2192 L\u01b0u Notion!\n\n\ud83d\udcac G\u1eedi link, ghi ch\u00fa, \u00fd t\u01b0\u1edfng \u2014 bot lo ph\u1ea7n c\u00f2n l\u1ea1i\n\ud83d\udcca /ps \u2014 xem dashboard`);
+      await sendMsg(chatId, `🧠 *PARA Router*\n\nGửi nội dung → Bot đề xuất tên + phân loại → Xác nhận → Lưu Notion!\n\n💬 Gửi link, ghi chú, ý tưởng — bot lo phần còn lại\n📊 /ps — xem dashboard`);
       return new Response("OK");
-    }
-
-    // Skill shortcuts
-    if (text.startsWith("/") && !text.includes(" ")) {
-      const cmd = text.substring(1).toLowerCase();
-      const skillId = CMD_ALIASES[cmd] || cmd.replace(/_/g, "-");
-      const skill = await findSkill(skillId);
-      if (skill) {
-        await typing(chatId);
-        await startSkillSession(chatId, skill.id);
-        const h = await getHistory(chatId, 5);
-        await saveMsg(chatId, userName, "user", `Chạy: ${skill.name}`);
-        const r = await callGemini(h, `Chạy skill ${skill.name}. Bắt đầu hướng dẫn.`, chatId, skill.skill_prompt);
-        await saveMsg(chatId, "bot", "assistant", r); await sendMsg(chatId, r);
-        return new Response("OK");
-      }
     }
 
     if (!(await isAllowed(chatId))) { await sendMsg(chatId, `⚠️ ID: ${chatId}`); return new Response("OK"); }
 
     await typing(chatId);
-    const session = await getActiveSession(chatId);
-    const skillCtx = session?.telegram_skills?.skill_prompt || undefined;
-    const history = await getHistory(chatId, session ? 15 : 10);
+    const history = await getHistory(chatId, 10);
     await saveMsg(chatId, userName, "user", text);
-    const aiResp = await callGemini(history, text, chatId, skillCtx);
+    const aiResp = await callGemini(history, text, chatId);
     await saveMsg(chatId, "bot", "assistant", aiResp);
     await sendMsg(chatId, aiResp);
     return new Response("OK");
